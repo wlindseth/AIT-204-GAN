@@ -67,21 +67,12 @@ with st.sidebar:
     
     # Model Management
     st.subheader("💾 Load Pre-Trained Model")
-    
-    import os
-    # Find all .pth files
-    model_files = [f for f in os.listdir('.') if f.endswith('.pth')]
-    
-    if not model_files:
-        st.warning("No .pth models found in repo.")
-    else:
-        selected_model = st.selectbox("Select a model", model_files)
-        
-        if st.button("Load Selected Model"):
+    if st.button("Load Selected Model"):
             try:
-                # 1. Determine correct attribute names (generator vs netG)
+                # 1. Get reference to the internal networks
                 trainer = st.session_state.trainer
                 
+                # Check for standard naming conventions
                 if hasattr(trainer, 'generator'):
                     net_g = trainer.generator
                     net_d = trainer.discriminator
@@ -89,37 +80,48 @@ with st.sidebar:
                     net_g = trainer.netG
                     net_d = trainer.netD
                 else:
-                    raise AttributeError("Could not find 'generator' or 'netG' in your Trainer class.")
+                    st.error("Could not find 'generator' or 'netG' in trainer.")
+                    st.stop()
 
-                # 2. Load the file onto the correct device (CPU/MPS fix)
-                checkpoint = torch.load(selected_model, map_location=trainer.device)
-                
-                # 3. Handle different save formats
+                # 2. Load the file
+                # map_location is CRITICAL for cloud deployment (maps GPU weights to CPU)
+                checkpoint = torch.load(selected_model, map_location=torch.device('cpu'))
+
+                # 3. Smart State Dict Loading
                 if isinstance(checkpoint, dict) and 'generator_state_dict' in checkpoint:
-                    # Case A: Complex dictionary save
-                    net_g.load_state_dict(checkpoint['generator_state_dict'])
-                    net_d.load_state_dict(checkpoint['discriminator_state_dict'])
+                    state_dict = checkpoint['generator_state_dict']
                 elif isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-                     # Case B: Generic dictionary save
-                    net_g.load_state_dict(checkpoint['model_state_dict'])
+                    state_dict = checkpoint['model_state_dict']
                 else:
-                    # Case C: Direct state dict (Most likely for you)
-                    # Note: If you saved the WHOLE model object (not state_dict), this part varies.
-                    # Usually, people save state_dicts. Let's try loading it directly.
-                    try:
-                        net_g.load_state_dict(checkpoint)
-                    except:
-                        # Fallback: Maybe the checkpoint IS the state dict for both?
-                        # This is a guess, but handles simple saves.
-                        pass
+                    # Assume the checkpoint IS the state dict
+                    state_dict = checkpoint
+
+                # 4. FIX KEY MISMATCHES (The #1 cause of this error)
+                # Sometimes saved models have 'module.' prefixes or different layer names.
+                # strict=False allows it to load "as much as possible" without crashing.
+                try:
+                    net_g.load_state_dict(state_dict, strict=True)
+                except RuntimeError as e:
+                    st.warning(f"Strict loading failed, trying loose loading... Error: {str(e)[:100]}...")
+                    net_g.load_state_dict(state_dict, strict=False)
+
+                # 5. Force Eval Mode (Fixes BatchNorm issues)
+                net_g.eval()
                 
                 st.success(f"Successfully loaded {selected_model}!")
                 st.balloons()
                 
+                # Debug Check: Print the output stats to ensure it's not all zeros
+                with torch.no_grad():
+                    dummy_noise = torch.randn(1, 100, 1, 1, device=trainer.device)
+                    test_out = net_g(dummy_noise)
+                    st.info(f"Diagnostic: Output range is {test_out.min().item():.2f} to {test_out.max().item():.2f}")
+                
             except Exception as e:
-                st.error(f"Error loading model: {e}")
-                st.code(f"Debug Info:\nAvailable attributes: {dir(st.session_state.trainer)}")
+                st.error(f"CRITICAL LOAD ERROR: {e}")
+                st.write("Full Error Details:", e)
 
+                
 # --- Main Interface ---
 st.title("🎨 DCGAN Dashboard")
 
