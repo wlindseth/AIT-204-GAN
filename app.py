@@ -63,6 +63,48 @@ with st.sidebar:
         except FileNotFoundError:
             st.error("No checkpoint found.")
 
+    st.divider()
+    
+    # Model Management
+    st.subheader("💾 Load Pre-Trained Model")
+    
+    # 1. Automatically find all .pth files in the folder
+    import os
+    model_files = [f for f in os.listdir('.') if f.endswith('.pth')]
+    
+    if not model_files:
+        st.warning("No .pth models found in repo.")
+    else:
+        # 2. Let user pick which one to load
+        selected_model = st.selectbox("Select a model", model_files)
+        
+        if st.button("Load Selected Model"):
+            try:
+                # CRITICAL FIX for Streamlit Cloud:
+                # We must tell PyTorch to load the weights onto the CURRENT device (CPU),
+                # regardless of where they were trained (MPS/CUDA).
+                
+                # Check if the trainer has a load_checkpoint method
+                # If your trainer.py is standard, we need to pass map_location inside it.
+                # Since we can't edit trainer.py easily here, we do a manual load:
+                
+                checkpoint = torch.load(selected_model, map_location=st.session_state.trainer.device)
+                
+                # Assuming your trainer saves state_dict directly or wrapped in a dict
+                if isinstance(checkpoint, dict) and 'generator_state_dict' in checkpoint:
+                    st.session_state.trainer.generator.load_state_dict(checkpoint['generator_state_dict'])
+                    st.session_state.trainer.discriminator.load_state_dict(checkpoint['discriminator_state_dict'])
+                else:
+                    # Fallback if you saved the raw model
+                    st.session_state.trainer.generator.load_state_dict(checkpoint)
+                
+                st.success(f"Successfully loaded {selected_model}!")
+                st.balloons()
+                
+            except Exception as e:
+                st.error(f"Error loading model: {e}")
+                st.info("Tip: Ensure your trainer.py saves the state_dict, not the full model class.")
+
 # --- Main Interface ---
 st.title("🎨 DCGAN Dashboard")
 
