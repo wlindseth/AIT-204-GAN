@@ -72,59 +72,70 @@ with st.sidebar:
         
         if st.button("Load Selected Model"):
             try:
-                # 1. Get reference to the internal networks
+                # 1. Setup
                 trainer = st.session_state.trainer
-                
-                # Check for standard naming conventions in your trainer class
                 if hasattr(trainer, 'generator'):
                     net_g = trainer.generator
-                    net_d = trainer.discriminator
                 elif hasattr(trainer, 'netG'):
                     net_g = trainer.netG
-                    net_d = trainer.netD
                 else:
-                    st.error("Could not find 'generator' or 'netG' in trainer.")
+                    st.error("❌ Could not find generator network in trainer!")
                     st.stop()
 
-                # 2. Load the file
-                # map_location='cpu' is CRITICAL for cloud deployment to prevent CUDA errors
+                # 2. Load File
                 checkpoint = torch.load(selected_model, map_location=torch.device('cpu'))
+                
+                # 3. Locate the actual weights inside the file
+                state_dict = checkpoint
+                if isinstance(checkpoint, dict):
+                    if 'generator_state_dict' in checkpoint:
+                        state_dict = checkpoint['generator_state_dict']
+                    elif 'model_state_dict' in checkpoint:
+                        state_dict = checkpoint['model_state_dict']
+                    # If loaded 'state_dict' is still a dict containing 'state_dict', dig deeper
+                    if isinstance(state_dict, dict) and 'state_dict' in state_dict:
+                        state_dict = state_dict['state_dict']
 
-                # 3. Smart State Dict Loading
-                state_dict = None
-                if isinstance(checkpoint, dict) and 'generator_state_dict' in checkpoint:
-                    state_dict = checkpoint['generator_state_dict']
-                elif isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-                    state_dict = checkpoint['model_state_dict']
-                else:
-                    # Assume the checkpoint IS the state dict
-                    state_dict = checkpoint
+                # 4. FIX: Strip prefixes (The #1 cause of gray boxes)
+                # If training used DataParallel, keys look like "module.layer1..."
+                # If training used a wrapper, keys might look like "generator.layer1..."
+                new_state_dict = {}
+                for k, v in state_dict.items():
+                    name = k
+                    if name.startswith('module.'):
+                        name = name[7:]  # remove "module."
+                    if name.startswith('generator.'):
+                        name = name[10:] # remove "generator."
+                    new_state_dict[name] = v
+                state_dict = new_state_dict
 
-                # 4. FIX KEY MISMATCHES (Strict Mode Fix)
-                try:
-                    net_g.load_state_dict(state_dict, strict=True)
-                except RuntimeError as e:
-                    st.warning(f"Strict loading failed, trying loose loading...")
-                    # This ignores minor naming mismatches (common when moving models)
-                    net_g.load_state_dict(state_dict, strict=False)
-
-                # 5. Force Eval Mode
+                # 5. Load with strict=False to ignore minor mismatches
+                missing, unexpected = net_g.load_state_dict(state_dict, strict=False)
+                
+                # 6. Validate
                 net_g.eval()
                 
-                st.success(f"Successfully loaded {selected_model}!")
-                st.balloons()
-                
-                # Debug Check to prove it's not "dead" (all zeros)
+                # DIAGNOSTICS
+                if len(missing) > 0:
+                    st.warning(f"⚠️ Partial Load! Missing keys: {len(missing)}")
+                    with st.expander("See missing keys"):
+                        st.write(missing)
+                else:
+                    st.success(f"✅ Model loaded perfectly! ({selected_model})")
+                    st.balloons()
+
+                # 7. Check if the model is actually outputting data
                 with torch.no_grad():
-                    dummy_noise = torch.randn(1, 100, 1, 1, device=trainer.device)
-                    test_out = net_g(dummy_noise)
-                    # Show range to verify model is outputting valid pixel values (-1 to 1)
-                    st.info(f"Diagnostic: Output range is {test_out.min().item():.2f} to {test_out.max().item():.2f}")
-                
+                    dummy = torch.randn(1, 100, 1, 1, device=trainer.device)
+                    out = net_g(dummy)
+                    min_val, max_val = out.min().item(), out.max().item()
+                    st.info(f"🔎 Diagnostic: Output pixel range is {min_val:.2f} to {max_val:.2f}")
+                    
+                    if abs(min_val) < 0.01 and abs(max_val) < 0.01:
+                        st.error("⚠️ The model is outputting pure zeros (Gray image). The weights might be corrupted.")
+
             except Exception as e:
-                st.error(f"CRITICAL LOAD ERROR: {e}")
-                # Print full error to UI for debugging
-                st.write(e)
+                st.error(f"CRITICAL ERROR: {e}")
 
 # --- Main Interface ---
 st.title("🎨 DCGAN Dashboard")
