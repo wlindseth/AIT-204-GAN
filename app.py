@@ -74,6 +74,7 @@ with st.sidebar:
             try:
                 # 1. Setup
                 trainer = st.session_state.trainer
+                # flexible attribute access
                 if hasattr(trainer, 'generator'):
                     net_g = trainer.generator
                 elif hasattr(trainer, 'netG'):
@@ -85,39 +86,42 @@ with st.sidebar:
                 # 2. Load File
                 checkpoint = torch.load(selected_model, map_location=torch.device('cpu'))
                 
-                # 3. Locate the actual weights inside the file
+                # 3. UNWRAP THE WEIGHTS (This is the fix)
                 state_dict = checkpoint
-                if isinstance(checkpoint, dict):
-                    # Try common keys
-                    possible_keys = ['generator_state_dict', 'model_state_dict', 'state_dict', 'g_state_dict', 'netG']
-                    for key in possible_keys:
-                        if key in checkpoint:
-                            state_dict = checkpoint[key]
-                            break
+                
+                # Check for the specific key found in your file dump
+                if isinstance(checkpoint, dict) and 'netG_state_dict' in checkpoint:
+                    state_dict = checkpoint['netG_state_dict']
+                    st.toast("Found 'netG_state_dict' key! Unwrapping...")
+                
+                # Fallback for other common names just in case
+                elif isinstance(checkpoint, dict) and 'generator_state_dict' in checkpoint:
+                    state_dict = checkpoint['generator_state_dict']
 
-                # 4. --- DIAGNOSTIC PRINTING ---
-                st.write("👀 DEBUGGING KEYS:")
-                
-                # Get the first 3 keys from the FILE
-                file_keys = list(state_dict.keys())
-                st.info(f"Keys found in FILE (first 3): {file_keys[:3]}")
-                
-                # Get the first 3 keys the MODEL expects
-                model_keys = list(net_g.state_dict().keys())
-                st.warning(f"Keys expected by MODEL (first 3): {model_keys[:3]}")
-                # -----------------------------
+                # 4. Clean Keys (Strip 'module.' if present)
+                new_state_dict = {}
+                for k, v in state_dict.items():
+                    name = k.replace('module.', '') # Fix DataParallel naming
+                    new_state_dict[name] = v
+                state_dict = new_state_dict
 
-                # 5. Attempt to load (Strict=False)
-                missing, unexpected = net_g.load_state_dict(state_dict, strict=False)
+                # 5. Load
+                net_g.load_state_dict(state_dict, strict=False)
                 
-                if len(missing) > 0:
-                    st.error(f"Still missing {len(missing)} keys. Compare the lists above!")
-                else:
-                    st.success("Success!")
-                    net_g.eval()
+                # 6. Validate
+                net_g.eval()
+                st.success(f"✅ Successfully loaded {selected_model}")
+                st.balloons()
+
+                # 7. Diagnostic Check
+                with torch.no_grad():
+                    dummy = torch.randn(1, 100, 1, 1, device=trainer.device)
+                    out = net_g(dummy)
+                    min_v, max_v = out.min().item(), out.max().item()
+                    st.info(f"Diagnostic: Output pixel range {min_v:.2f} to {max_v:.2f}")
 
             except Exception as e:
-                st.error(f"Error: {e}")
+                st.error(f"Error loading model: {e}")
 
 # --- Main Interface ---
 st.title("🎨 DCGAN Dashboard")
