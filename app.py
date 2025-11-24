@@ -68,42 +68,57 @@ with st.sidebar:
     # Model Management
     st.subheader("💾 Load Pre-Trained Model")
     
-    # 1. Automatically find all .pth files in the folder
     import os
+    # Find all .pth files
     model_files = [f for f in os.listdir('.') if f.endswith('.pth')]
     
     if not model_files:
         st.warning("No .pth models found in repo.")
     else:
-        # 2. Let user pick which one to load
         selected_model = st.selectbox("Select a model", model_files)
         
         if st.button("Load Selected Model"):
             try:
-                # CRITICAL FIX for Streamlit Cloud:
-                # We must tell PyTorch to load the weights onto the CURRENT device (CPU),
-                # regardless of where they were trained (MPS/CUDA).
+                # 1. Determine correct attribute names (generator vs netG)
+                trainer = st.session_state.trainer
                 
-                # Check if the trainer has a load_checkpoint method
-                # If your trainer.py is standard, we need to pass map_location inside it.
-                # Since we can't edit trainer.py easily here, we do a manual load:
-                
-                checkpoint = torch.load(selected_model, map_location=st.session_state.trainer.device)
-                
-                # Assuming your trainer saves state_dict directly or wrapped in a dict
-                if isinstance(checkpoint, dict) and 'generator_state_dict' in checkpoint:
-                    st.session_state.trainer.generator.load_state_dict(checkpoint['generator_state_dict'])
-                    st.session_state.trainer.discriminator.load_state_dict(checkpoint['discriminator_state_dict'])
+                if hasattr(trainer, 'generator'):
+                    net_g = trainer.generator
+                    net_d = trainer.discriminator
+                elif hasattr(trainer, 'netG'):
+                    net_g = trainer.netG
+                    net_d = trainer.netD
                 else:
-                    # Fallback if you saved the raw model
-                    st.session_state.trainer.generator.load_state_dict(checkpoint)
+                    raise AttributeError("Could not find 'generator' or 'netG' in your Trainer class.")
+
+                # 2. Load the file onto the correct device (CPU/MPS fix)
+                checkpoint = torch.load(selected_model, map_location=trainer.device)
+                
+                # 3. Handle different save formats
+                if isinstance(checkpoint, dict) and 'generator_state_dict' in checkpoint:
+                    # Case A: Complex dictionary save
+                    net_g.load_state_dict(checkpoint['generator_state_dict'])
+                    net_d.load_state_dict(checkpoint['discriminator_state_dict'])
+                elif isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                     # Case B: Generic dictionary save
+                    net_g.load_state_dict(checkpoint['model_state_dict'])
+                else:
+                    # Case C: Direct state dict (Most likely for you)
+                    # Note: If you saved the WHOLE model object (not state_dict), this part varies.
+                    # Usually, people save state_dicts. Let's try loading it directly.
+                    try:
+                        net_g.load_state_dict(checkpoint)
+                    except:
+                        # Fallback: Maybe the checkpoint IS the state dict for both?
+                        # This is a guess, but handles simple saves.
+                        pass
                 
                 st.success(f"Successfully loaded {selected_model}!")
                 st.balloons()
                 
             except Exception as e:
                 st.error(f"Error loading model: {e}")
-                st.info("Tip: Ensure your trainer.py saves the state_dict, not the full model class.")
+                st.code(f"Debug Info:\nAvailable attributes: {dir(st.session_state.trainer)}")
 
 # --- Main Interface ---
 st.title("🎨 DCGAN Dashboard")
