@@ -88,54 +88,36 @@ with st.sidebar:
                 # 3. Locate the actual weights inside the file
                 state_dict = checkpoint
                 if isinstance(checkpoint, dict):
-                    if 'generator_state_dict' in checkpoint:
-                        state_dict = checkpoint['generator_state_dict']
-                    elif 'model_state_dict' in checkpoint:
-                        state_dict = checkpoint['model_state_dict']
-                    # If loaded 'state_dict' is still a dict containing 'state_dict', dig deeper
-                    if isinstance(state_dict, dict) and 'state_dict' in state_dict:
-                        state_dict = state_dict['state_dict']
+                    # Try common keys
+                    possible_keys = ['generator_state_dict', 'model_state_dict', 'state_dict', 'g_state_dict', 'netG']
+                    for key in possible_keys:
+                        if key in checkpoint:
+                            state_dict = checkpoint[key]
+                            break
 
-                # 4. FIX: Strip prefixes (The #1 cause of gray boxes)
-                # If training used DataParallel, keys look like "module.layer1..."
-                # If training used a wrapper, keys might look like "generator.layer1..."
-                new_state_dict = {}
-                for k, v in state_dict.items():
-                    name = k
-                    if name.startswith('module.'):
-                        name = name[7:]  # remove "module."
-                    if name.startswith('generator.'):
-                        name = name[10:] # remove "generator."
-                    new_state_dict[name] = v
-                state_dict = new_state_dict
+                # 4. --- DIAGNOSTIC PRINTING ---
+                st.write("👀 DEBUGGING KEYS:")
+                
+                # Get the first 3 keys from the FILE
+                file_keys = list(state_dict.keys())
+                st.info(f"Keys found in FILE (first 3): {file_keys[:3]}")
+                
+                # Get the first 3 keys the MODEL expects
+                model_keys = list(net_g.state_dict().keys())
+                st.warning(f"Keys expected by MODEL (first 3): {model_keys[:3]}")
+                # -----------------------------
 
-                # 5. Load with strict=False to ignore minor mismatches
+                # 5. Attempt to load (Strict=False)
                 missing, unexpected = net_g.load_state_dict(state_dict, strict=False)
                 
-                # 6. Validate
-                net_g.eval()
-                
-                # DIAGNOSTICS
                 if len(missing) > 0:
-                    st.warning(f"⚠️ Partial Load! Missing keys: {len(missing)}")
-                    with st.expander("See missing keys"):
-                        st.write(missing)
+                    st.error(f"Still missing {len(missing)} keys. Compare the lists above!")
                 else:
-                    st.success(f"✅ Model loaded perfectly! ({selected_model})")
-                    st.balloons()
-
-                # 7. Check if the model is actually outputting data
-                with torch.no_grad():
-                    dummy = torch.randn(1, 100, 1, 1, device=trainer.device)
-                    out = net_g(dummy)
-                    min_val, max_val = out.min().item(), out.max().item()
-                    st.info(f"🔎 Diagnostic: Output pixel range is {min_val:.2f} to {max_val:.2f}")
-                    
-                    if abs(min_val) < 0.01 and abs(max_val) < 0.01:
-                        st.error("⚠️ The model is outputting pure zeros (Gray image). The weights might be corrupted.")
+                    st.success("Success!")
+                    net_g.eval()
 
             except Exception as e:
-                st.error(f"CRITICAL ERROR: {e}")
+                st.error(f"Error: {e}")
 
 # --- Main Interface ---
 st.title("🎨 DCGAN Dashboard")
