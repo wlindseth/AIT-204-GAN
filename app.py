@@ -37,6 +37,7 @@ if "metrics_history" not in st.session_state:
     }
 
 # --- Sidebar Configuration ---
+# --- Sidebar Configuration ---
 with st.sidebar:
     st.header("⚙️ Configuration")
     
@@ -47,27 +48,31 @@ with st.sidebar:
     
     st.divider()
     
-    # Model Management
-    st.subheader("💾 Model Management")
-    if st.button("Save Checkpoint"):
+    # Section 1: Save/Load (Manual)
+    st.subheader("💾 Manual Checkpoints")
+    if st.button("Save Current State"):
         try:
-            st.session_state.trainer.save_checkpoint("dcgan_checkpoint.pth")
-            st.success("Model saved locally!")
+            st.session_state.trainer.save_checkpoint("manual_checkpoint.pth")
+            st.success("Saved as manual_checkpoint.pth")
         except Exception as e:
-            st.error(f"Error saving: {e}")
-            
-    if st.button("Load Checkpoint"):
-        try:
-            st.session_state.trainer.load_checkpoint("dcgan_checkpoint.pth")
-            st.success("Model loaded!")
-        except FileNotFoundError:
-            st.error("No checkpoint found.")
+            st.error(f"Error: {e}")
 
     st.divider()
     
-    # Model Management
-    st.subheader("💾 Load Pre-Trained Model")
-    if st.button("Load Selected Model"):
+    # Section 2: Load Pre-Trained Models (The Fix)
+    st.subheader("📂 Load Pre-Trained Model")
+    
+    import os
+    # Find all .pth files in the current directory
+    model_files = [f for f in os.listdir('.') if f.endswith('.pth')]
+    
+    if not model_files:
+        st.warning("No .pth models found in repo root.")
+    else:
+        # THIS was missing in your code:
+        selected_model = st.selectbox("Select a model file", model_files)
+        
+        if st.button("Load Selected Model"):
             try:
                 # 1. Get reference to the internal networks
                 trainer = st.session_state.trainer
@@ -75,16 +80,14 @@ with st.sidebar:
                 # Check for standard naming conventions
                 if hasattr(trainer, 'generator'):
                     net_g = trainer.generator
-                    net_d = trainer.discriminator
                 elif hasattr(trainer, 'netG'):
                     net_g = trainer.netG
-                    net_d = trainer.netD
                 else:
                     st.error("Could not find 'generator' or 'netG' in trainer.")
                     st.stop()
 
                 # 2. Load the file
-                # map_location is CRITICAL for cloud deployment (maps GPU weights to CPU)
+                # map_location='cpu' is CRITICAL for cloud deployment
                 checkpoint = torch.load(selected_model, map_location=torch.device('cpu'))
 
                 # 3. Smart State Dict Loading
@@ -96,22 +99,20 @@ with st.sidebar:
                     # Assume the checkpoint IS the state dict
                     state_dict = checkpoint
 
-                # 4. FIX KEY MISMATCHES (The #1 cause of this error)
-                # Sometimes saved models have 'module.' prefixes or different layer names.
-                # strict=False allows it to load "as much as possible" without crashing.
+                # 4. FIX KEY MISMATCHES (Strict Mode Fix)
                 try:
                     net_g.load_state_dict(state_dict, strict=True)
                 except RuntimeError as e:
-                    st.warning(f"Strict loading failed, trying loose loading... Error: {str(e)[:100]}...")
+                    st.warning(f"Strict loading failed, trying loose loading...")
                     net_g.load_state_dict(state_dict, strict=False)
 
-                # 5. Force Eval Mode (Fixes BatchNorm issues)
+                # 5. Force Eval Mode
                 net_g.eval()
                 
                 st.success(f"Successfully loaded {selected_model}!")
                 st.balloons()
                 
-                # Debug Check: Print the output stats to ensure it's not all zeros
+                # Debug Check
                 with torch.no_grad():
                     dummy_noise = torch.randn(1, 100, 1, 1, device=trainer.device)
                     test_out = net_g(dummy_noise)
@@ -119,106 +120,6 @@ with st.sidebar:
                 
             except Exception as e:
                 st.error(f"CRITICAL LOAD ERROR: {e}")
-                st.write("Full Error Details:", e)
-
-                
-# --- Main Interface ---
-st.title("🎨 DCGAN Dashboard")
-
-tab1, tab2 = st.tabs(["🚀 Training", "✨ Generation"])
-
-# --- TAB 1: TRAINING ---
-with tab1:
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        # Live Charts
-        st.subheader("Live Metrics")
-        chart_placeholder = st.empty()
-        
-    with col2:
-        # Live Preview
-        st.subheader("Live Preview")
-        image_preview = st.empty()
-
-    # Control Buttons
-    start_col, stop_col = st.columns(2)
-    
-    with start_col:
-        start_btn = st.button("Start Training", type="primary", disabled=st.session_state.is_training)
-        
-    with stop_col:
-        stop_btn = st.button("Stop Training", disabled=not st.session_state.is_training)
-
-    # TRAINING LOGIC
-    if start_btn:
-        st.session_state.is_training = True
-        trainer = st.session_state.trainer
-        
-        # Create Data Loader
-        try:
-            dataloader = trainer.get_dataloader(dataset_name, batch_size)
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            # Training Loop
-            for epoch in range(num_epochs):
-                if not st.session_state.is_training:
-                    break
-                
-                epoch_g_loss = 0
-                epoch_d_loss = 0
-                batches = 0
-                
-                for i, data in enumerate(dataloader):
-                    # Check for stop signal (Streamlit Rerun handling)
-                    # Note: In Streamlit, true 'interrupts' are hard, we check per batch
-                    
-                    real_images = data[0].to(trainer.device)
-                    metrics = trainer.train_step(real_images)
-                    
-                    epoch_g_loss += metrics['loss_g']
-                    epoch_d_loss += metrics['loss_d']
-                    batches += 1
-                    
-                    # Update Progress within Epoch
-                    if i % 10 == 0:
-                        status_text.text(f"Epoch {epoch+1}/{num_epochs} | Batch {i}/{len(dataloader)}")
-                        progress_bar.progress((i / len(dataloader)))
-
-                # End of Epoch Updates
-                avg_g_loss = epoch_g_loss / batches
-                avg_d_loss = epoch_d_loss / batches
-                
-                # Update History
-                st.session_state.metrics_history["g_loss"].append(avg_g_loss)
-                st.session_state.metrics_history["d_loss"].append(avg_d_loss)
-                st.session_state.metrics_history["epochs"].append(epoch)
-                
-                # Update Chart
-                chart_data = {
-                    "Generator Loss": st.session_state.metrics_history["g_loss"],
-                    "Discriminator Loss": st.session_state.metrics_history["d_loss"]
-                }
-                chart_placeholder.line_chart(chart_data)
-                
-                # Update Image Preview
-                with torch.no_grad():
-                    fake = trainer.generate_images(16)
-                    # Convert tensor to displayable image
-                    # Assuming trainer outputs normalized [-1, 1] tensor
-                    grid_img = trainer.images_to_base64(fake, nrow=4) 
-                    # Note: Your images_to_base64 returns a b64 string. 
-                    # Streamlit can read that, but it's easier if we just display the grid.
-                    # Since I don't see your helper code, I'll use the base64 you have:
-                    image_preview.markdown(f'<img src="data:image/png;base64,{grid_img}" width="100%"/>', unsafe_allow_html=True)
-
-            st.session_state.is_training = False
-            st.success("Training Complete!")
-            
-        except Exception as e:
-            st.error(f"Training failed: {e}")
-            st.session_state.is_training = False
 
 # --- TAB 2: GENERATION ---
 with tab2:
